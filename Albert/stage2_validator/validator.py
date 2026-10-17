@@ -31,7 +31,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -187,7 +187,11 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _parse_rfc3339(value: str) -> datetime:
-    return datetime.fromisoformat(value[:-1] + "+00:00" if value[-1] in "Zz" else value)
+    iso = value[:-1] + "+00:00" if value[-1] in "Zz" else value
+    if iso[17:19] == "60":
+        # RFC 3339 allows a leap second (:60); datetime cannot hold one.
+        return datetime.fromisoformat(iso[:17] + "59" + iso[19:]) + timedelta(seconds=1)
+    return datetime.fromisoformat(iso)
 
 
 def _format_checker() -> FormatChecker:
@@ -330,8 +334,10 @@ class Validator:
         self._stop = threading.Event()
         self._last_log = time.monotonic()
         self._last_metrics_push = 0.0
+        self._pushed: dict[str, int] = {}  # counter values already added to the metrics hash
         self._in_signal_handler = False
         self._own_pending_dirty = True
+        self._next_pending_retry = 0.0
         self._last_reclaim = float("-inf")
 
     # ------------------------------------------------------------------
@@ -616,11 +622,13 @@ class Validator:
                 break
             if isinstance(cursor, bytes):
                 cursor = cursor.decode("utf-8")
-            if not claimed:
-                break
-            batch = [(_id_str(entry_id), fields) for entry_id, fields in claimed]
-            self._process_batch(batch)
-            processed += len(batch)
+            # Redis scans at most COUNT*10 pending entries per call, so an
+            # empty claim with a non-zero cursor only means nothing in that
+            # window was idle: keep walking until the cursor wraps to 0-0.
+            if claimed:
+                batch = [(_id_str(entry_id), fields) for entry_id, fields in claimed]
+                self._process_batch(batch)
+                processed += len(batch)
             if cursor == "0-0":
                 break
         if processed:
@@ -666,22 +674,31 @@ class Validator:
     # ------------------------------------------------------------------
 
     def _push_metrics(self) -> None:
+        """Counters go in with HINCRBY (only what changed since the last
+        push), so the hash holds the whole group's totals however many
+        validators run; HSET from each one would leave only the last
+        writer's. Rate and latency are per validator: the plain fields are
+        the last writer's, and each validator also writes its own copy
+        suffixed with ``:<validator_id>``."""
         snap = self.counters.snapshot()
-        payload = {
-            "validated": snap["validated"],
-            "passed": snap["passed"],
-            "dlq": snap["dlq"],
+        counts = {"validated": snap["validated"], "passed": snap["passed"], "dlq": snap["dlq"]}
+        for code, n in snap["by_reason"].items():
+            counts[f"dlq_{code}"] = n
+        gauges = {
             "events_per_sec": f"{snap['events_per_sec']:.2f}",
             "p50_ms": "" if snap["p50_ms"] is None else f"{snap['p50_ms']:.2f}",
             "p95_ms": "" if snap["p95_ms"] is None else f"{snap['p95_ms']:.2f}",
             "elapsed_s": f"{snap['elapsed_s']:.3f}",
-            "validator_id": self.cfg.consumer_id,
-            "updated_ts": str(self._now_ms()),
         }
-        for code, n in snap["by_reason"].items():
-            payload[f"dlq_{code}"] = n
+        payload = {**gauges, **{f"{k}:{self.cfg.consumer_id}": v for k, v in gauges.items()},
+                   "validator_id": self.cfg.consumer_id, "updated_ts": str(self._now_ms())}
         try:
-            self.client.hset(self.cfg.metrics_key, mapping=payload)
+            pipe = self.client.pipeline(transaction=False)
+            for k, n in counts.items():
+                pipe.hincrby(self.cfg.metrics_key, k, n - self._pushed.get(k, 0))
+            pipe.hset(self.cfg.metrics_key, mapping=payload)
+            pipe.execute()
+            self._pushed = counts
         except Exception:  # noqa: BLE001
             log.exception("failed to push metrics")
 
@@ -709,8 +726,12 @@ class Validator:
     def run(self) -> dict[str, Any]:
         self._install_signal_handlers()
         if not self.cfg.consumer_id:
-            self.cfg.consumer_id = socket.gethostname() or "validator"
+            # hostname-pid: unique per process on a host (two validators on one
+            # host must not share a pending list), and stable across restarts
+            # of a container, where the pid is always 1.
+            self.cfg.consumer_id = f"{socket.gethostname() or 'validator'}-{os.getpid()}"
         self.counters = Counters()
+        self._pushed = {}
 
         self.ensure_group()
         self._own_pending_dirty = True
@@ -726,11 +747,16 @@ class Validator:
                     if time.monotonic() - self._last_reclaim >= reclaim_every_s:
                         self._reclaim_pending()
                         self._last_reclaim = time.monotonic()
-                    if self._own_pending_dirty:
+                    if self._own_pending_dirty and time.monotonic() >= self._next_pending_retry:
                         # Entries already delivered to this consumer but not
                         # acked: a previous crash or a failed forward.
                         self._own_pending_dirty = False
                         self._drain_own_pending()
+                        if self._own_pending_dirty:
+                            # A write failed again. Retry after a backoff and keep
+                            # reading new entries meanwhile, rather than spinning
+                            # on the same failure and starving the stream.
+                            self._next_pending_retry = time.monotonic() + self.cfg.retry_backoff_s
                         continue
                     batch = self._read_batch()
                     if not batch:
@@ -793,7 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dlq-stream", default=DLQ_STREAM)
     p.add_argument("--group", default=GROUP)
     p.add_argument("--consumer-id", default=os.environ.get("VALIDATOR_ID", ""),
-                   help="consumer name within the group (default: hostname)")
+                   help="consumer name within the group (default: hostname-pid)")
     p.add_argument("--block-ms", type=int, default=1000,
                    help="XREADGROUP BLOCK in ms")
     p.add_argument("--count", type=int, default=500,

@@ -36,7 +36,9 @@ producer ──XADD──▶ tx.raw ──XREADGROUP──▶ validator ──XA
 ```
 
 - Consumer group: `validators` (idempotent `XGROUP CREATE ... MKSTREAM`).
-- Consumer name: `--consumer-id`, defaults to `$(hostname)`.
+- Consumer name: `--consumer-id`, defaults to `$(hostname)-<pid>`: unique per
+  process, so two validators on one host never share a pending list, and
+  stable across restarts of a container (pid 1).
 - Processing is **at-least-once** — `XACK` happens only after the event
   has been successfully XADDed to `tx.valid` or `tx.dlq`. The scorer
   (Stage 3) must therefore be idempotent on `event_id`.
@@ -47,7 +49,9 @@ producer ──XADD──▶ tx.raw ──XREADGROUP──▶ validator ──XA
 - Each batch is forwarded with one pipelined round trip of `XADD`s and
   acked with one multi-ID `XACK` covering exactly the entries whose `XADD`
   succeeded. A Redis I/O error leaves the entries pending and is retried
-  after a back-off; it is never dead-lettered.
+  after a back-off; it is never dead-lettered. While a retry is backing off
+  the validator keeps reading new entries, so one entry whose write keeps
+  failing cannot stall the stream.
 - A poison event that triggers an unexpected exception goes to the DLQ
   with reason `INTERNAL_ERROR` — the loop never stalls.
 
@@ -85,7 +89,7 @@ REDIS_URL=redis://localhost:6379/0 python stage2_validator/validator.py \
 | `--valid-stream` | `tx.valid` | Output stream for valid events (byte-identical payload) |
 | `--dlq-stream` | `tx.dlq` | Output stream for invalid / malformed events |
 | `--group` | `validators` | Consumer group name |
-| `--consumer-id` | `$(hostname)` | Consumer name within the group |
+| `--consumer-id` | `$(hostname)-<pid>` | Consumer name within the group |
 | `--block-ms` | 1000 | `XREADGROUP BLOCK` in ms |
 | `--count` | 500 | `XREADGROUP COUNT` batch size |
 | `--min-idle-ms` | 30000 | `XAUTOCLAIM` idle threshold for recovery |
@@ -156,7 +160,10 @@ docker exec -it redis redis-cli XRANGE tx.dlq - + COUNT 5
 docker exec -it redis redis-cli --no-raw XRANGE tx.dlq - + \
   | grep -A1 '"reason"'
 
-# Live validator metrics (for the dashboard).
+# Live validator metrics (for the dashboard). validated / passed / dlq /
+# dlq_<REASON> are totals across every validator in the group (HINCRBY);
+# events_per_sec / p50_ms / p95_ms are the last writer's, with a per-validator
+# copy in <field>:<validator_id>. DEL the key to reset the totals.
 docker exec -it redis redis-cli HGETALL metrics:validator
 
 # Pending entries (anything the consumer group has delivered but not XACKed).

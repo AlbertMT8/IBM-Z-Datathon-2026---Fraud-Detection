@@ -1,0 +1,4 @@
+fullscan: 1296675 rows, 0 invalid, 167s
+RESULT: PASS
+
+[exited with code 0]

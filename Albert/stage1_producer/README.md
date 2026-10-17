@@ -20,7 +20,8 @@ Each `tx.raw` entry has these stream fields:
 
 Row → event mapping (identical to `Dhruv/stage3_scoring/demo_stream.make_event`):
 
-- `emitted_at` — RFC3339 UTC with ms, stamped just before the `XADD` (latency clock start)
+- `emitted_at` — RFC3339 UTC with ms, stamped as the batch's `XADD`s are sent, not when
+  the event is queued (latency clock start)
 - `transaction.occurred_at` — `trans_date_trans_time` kept as-is with `Z` appended
   (hour-of-day preserved); `transaction.unix_time` is **derived** from it, not
   copied from the CSV

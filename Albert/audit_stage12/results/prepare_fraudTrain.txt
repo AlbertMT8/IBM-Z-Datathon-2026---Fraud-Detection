@@ -1,0 +1,3 @@
+{"rows": 1296675, "elapsed_s": 15.744, "output": "/private/tmp/claude-501/-Users-dhruv-khemka--claude-spares-spare-ziEggH/b953d8d2-689a-4c9e-9981-f80b5959d4b6/scratchpad/live/sorted.csv"}
+       15.98 real        14.82 user         0.87 sys
+           447692800  maximum resident set size

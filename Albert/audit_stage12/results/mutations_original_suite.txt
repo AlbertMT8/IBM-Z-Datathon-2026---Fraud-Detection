@@ -1,0 +1,27 @@
+Mutation testing of Albert's ORIGINAL 58 tests (commit 91bb2bc), one planted defect at a time.
+CAUGHT = at least one test failed; MISSED = all 58 still passed.
+
+baseline BASELINE                                       58 passed
+CAUGHT   V: re-serialize valid payload                  6 failed, 52 passed
+CAUGHT   V: drop date-time format check                 8 failed, 50 passed
+MISSED   V: ack even when forward failed                58 passed
+CAUGHT   V: accept NaN/Infinity                         3 failed, 55 passed
+MISSED   V: swallow every group error                   58 passed
+CAUGHT   V: no XAUTOCLAIM at all                        2 failed, 56 passed
+CAUGHT   V: DLQ keeps only first error                  1 failed, 57 passed
+CAUGHT   V: no INTERNAL_ERROR safety net                1 failed, 57 passed
+CAUGHT   V: metrics never pushed                        1 failed, 57 passed
+CAUGHT   V: schema rebuilt per event                    2 failed, 56 passed (suite took 612 s)
+CAUGHT   P: zip not zero-padded                         1 failed, 57 passed
+MISSED   P: token bucket no burst cap                   58 passed
+CAUGHT   P: no state save on exit                       2 failed, 56 passed
+CAUGHT   P: checkpoint before flush                     1 failed, 57 passed
+CAUGHT   P: no timed flush while waiting                1 failed, 57 passed
+CAUGHT   P: same event_id every replay                  1 failed, 57 passed
+MISSED   P: emitted_at stamped before token wait        58 passed
+MISSED   P: rows streamed via list() (whole file in RAM) 58 passed
+MISSED   P: prepare sorts whole file in one chunk       58 passed
+
+Every MISSED mutation is CAUGHT by the 70-test suite after the audit
+(tests/test_audit_regressions.py); the emitted_at one is covered by
+test_emitted_at_is_stamped_when_the_xadd_is_sent_not_when_queued.

@@ -409,8 +409,8 @@ class Producer:
         self._stop = threading.Event()
         self._rng = random.Random(cfg.seed)
         self._malformed_cycle = 0
-        self._pipeline: Any = None
-        self._pending = 0
+        # Events queued for the next pipelined flush: (payload, seq, malformed_kind).
+        self._buffer: list[tuple[dict[str, Any], int, Optional[str]]] = []
         self._last_flush = time.monotonic()
         self._last_log = time.monotonic()
 
@@ -433,45 +433,58 @@ class Producer:
 
     # ----- publish path -----
 
-    def _pipeline_open(self) -> Any:
-        if self._pipeline is None:
-            # transaction=False → plain command batching, no MULTI/EXEC.
-            self._pipeline = self.client.pipeline(transaction=False)
-            self._pending = 0
-            self._last_flush = time.monotonic()
-        return self._pipeline
-
     def _flush(self, force: bool = False) -> None:
-        if self._pipeline is None or self._pending == 0:
-            if force and self._pipeline is not None:
-                self._pipeline.execute()
-                self._pipeline = None
-                self._pending = 0
+        """Send the queued events as one pipelined round trip. emitted_at is
+        stamped here, as each XADD is built, so it marks the instant of emit
+        rather than the moment the event was queued (up to flush_interval
+        earlier)."""
+        if not self._buffer:
             return
-        self._pipeline.execute()
-        self._pipeline = None
-        self._pending = 0
+        # transaction=False → plain command batching, no MULTI/EXEC.
+        pipe = self.client.pipeline(transaction=False)
+        nbytes = 0
+        for payload, seq, malformed_kind in self._buffer:
+            payload["emitted_at"] = _iso_ms(self._now_ms())
+            body = json.dumps(payload, separators=(",", ":"))
+            # producer_id / seq are stream metadata: the contract forbids extra
+            # payload keys.
+            fields = {"data": body, "producer_id": self.cfg.producer_id, "seq": str(seq)}
+            if malformed_kind is not None:
+                fields["malformed"] = malformed_kind
+            pipe.xadd(self.cfg.stream, fields, maxlen=self.cfg.maxlen, approximate=True)
+            nbytes += len(body)
+        try:
+            pipe.execute()
+        except Exception:
+            # The batch did not (fully) reach Redis, and redis-py has already
+            # discarded it. Take it back out of the checkpoint so a save in
+            # run()'s finally never claims these rows and --resume re-sends them.
+            n = len(self._buffer)
+            bad = sum(1 for _, _, kind in self._buffer if kind is not None)
+            self.state.seq -= n
+            self.state.rows_consumed -= n
+            self.state.emitted -= n
+            self.state.malformed -= bad
+            self.counters.emitted -= n
+            self.counters.malformed -= bad
+            self._buffer.clear()
+            raise
+        self.counters.bytes_written += nbytes
+        self._buffer.clear()
         self._last_flush = time.monotonic()
 
-    def _publish(self, payload: dict[str, Any], seq: int, malformed_kind: Optional[str] = None) -> int:
-        body = json.dumps(payload, separators=(",", ":"))
-        # producer_id / seq are stream metadata: the contract forbids extra
-        # payload keys.
-        fields = {"data": body, "producer_id": self.cfg.producer_id, "seq": str(seq)}
-        if malformed_kind is not None:
-            fields["malformed"] = malformed_kind
-        pipe = self._pipeline_open()
-        pipe.xadd(self.cfg.stream, fields, maxlen=self.cfg.maxlen, approximate=True)
-        self._pending += 1
-        if self._pending >= self.cfg.batch_size:
+    def _publish(self, payload: dict[str, Any], seq: int, malformed_kind: Optional[str] = None) -> None:
+        if not self._buffer:
+            self._last_flush = time.monotonic()  # flush_interval counts from the oldest queued event
+        self._buffer.append((payload, seq, malformed_kind))
+        if len(self._buffer) >= self.cfg.batch_size:
             self._flush()
-        return len(body)
 
     def _sleep(self, seconds: float) -> None:
         """Token-bucket sleeper that flushes a partial batch once
         ``flush_interval`` has elapsed, so a slow trickle never leaves events
         sitting in the pipeline while we wait for the next token."""
-        if self._pending:
+        if self._buffer:
             until_flush = self._last_flush + self.cfg.flush_interval - time.monotonic()
             if until_flush <= seconds:
                 if until_flush > 0:
@@ -524,7 +537,7 @@ class Producer:
 
                 self.bucket.acquire(sleeper=self._sleep)
 
-                # Build event stamped NOW — emitted_at must be close to publish.
+                # emitted_at is re-stamped in _flush, as the XADD is sent.
                 event = build_event(row, now_ms=self._now_ms(), run_id=self.cfg.run_id)
 
                 kind: Optional[str] = None
@@ -537,12 +550,14 @@ class Producer:
                 else:
                     payload = event
 
-                nbytes = self._publish(payload, self.state.seq, kind)
-                self.counters.bytes_written += nbytes
+                # Count the event before queueing it, so a failed flush can
+                # subtract exactly what was queued (see _flush).
+                seq = self.state.seq
                 self.counters.emitted += 1
                 self.state.emitted += 1
                 self.state.seq += 1
                 self.state.rows_consumed += 1
+                self._publish(payload, seq, kind)
 
                 # Time-based flush so a slow trickle never stalls.
                 if time.monotonic() - self._last_flush >= self.cfg.flush_interval:

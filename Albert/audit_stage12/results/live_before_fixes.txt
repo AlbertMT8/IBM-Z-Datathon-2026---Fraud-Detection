@@ -1,0 +1,29 @@
+=================== [ORIGINAL] basic
+validator summary: {"validated": 20000, "passed": 18012, "dlq": 1988, "by_reason": {"SCHEMA_VIOLATION": 497, "MISSING_REQUIRED": 497, "TYPE_ERROR": 497, "RANGE_ERROR": 497}, "events_per_sec": 916.46, "elapsed_s": 21.823, "p50_ms": 66.0, "p95_ms": 102.0, "validator_id": "val-1"}
+XLEN raw=20000 valid=18012 dlq=1988 pending=0
+unique routed=20000 duplicates=0 tagged=1988
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=65ms p95=102ms max=123ms
+producer achieved_rate=1009.72/s target=1000.0
+RESULT: PASS
+exit=0
+=================== [ORIGINAL] emit-gap
+producer buffering (XADD arrival - emitted_at) over 20000 events: p50=53ms p95=97ms max=221ms
+RESULT: FAIL
+  FAIL: emitted_at precedes the XADD by p95=97ms
+exit=1
+=================== [ORIGINAL] metrics
+XLEN valid+dlq=10000  metrics:validator validated=5197 passed=4703 dlq=494
+RESULT: FAIL
+  FAIL: metrics hash says 5197 validated, streams hold 10000
+exit=1
+=================== [ORIGINAL] two-default
+attempt 0: consumers=['Dhruvs-MacBook-Neo.local'] tx.valid=6000 duplicates=0
+RESULT: FAIL
+  FAIL: attempt 0: two validators registered as ['Dhruvs-MacBook-Neo.local']
+exit=1
+=================== [ORIGINAL] xautoclaim
+reclaimed=0 pending by consumer={'busy': 50, 'dead': 10, 'rec': 0}
+RESULT: FAIL
+  FAIL: dead consumer still holds 10 entries
+exit=1

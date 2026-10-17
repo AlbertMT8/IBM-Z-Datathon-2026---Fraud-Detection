@@ -1,0 +1,73 @@
+=================== [FIXED] basic
+validator summary: {"validated": 20000, "passed": 18012, "dlq": 1988, "by_reason": {"SCHEMA_VIOLATION": 497, "MISSING_REQUIRED": 497, "TYPE_ERROR": 497, "RANGE_ERROR": 497}, "events_per_sec": 912.77, "elapsed_s": 21.911, "p50_ms": 17.0, "p95_ms": 23.0, "validator_id": "val-1"}
+XLEN raw=20000 valid=18012 dlq=1988 pending=0
+unique routed=20000 duplicates=0 tagged=1988
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=17ms p95=23ms max=27ms
+producer achieved_rate=1009.47/s target=1000.0
+RESULT: PASS
+exit=0
+=================== [FIXED] kill-same
+SIGKILLed validator at XLEN(valid)=5801 pending=99
+validator summary: {"validated": 13599, "passed": 12211, "dlq": 1388, "by_reason": {"SCHEMA_VIOLATION": 347, "MISSING_REQUIRED": 347, "TYPE_ERROR": 347, "RANGE_ERROR": 347}, "events_per_sec": 1074.23, "elapsed_s": 12.659, "p50_ms": 19.0, "p95_ms": 1394.0, "validator_id": "val-1"}
+XLEN raw=20000 valid=18012 dlq=1988 pending=0
+unique routed=20000 duplicates=0 tagged=1988
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=18ms p95=1021ms max=1942ms
+producer achieved_rate=1009.48/s target=1000.0
+RESULT: PASS
+exit=0
+=================== [FIXED] kill-new
+SIGKILLed validator at XLEN(valid)=5891 pending=1
+validator summary: {"validated": 13500, "passed": 12121, "dlq": 1379, "by_reason": {"SCHEMA_VIOLATION": 345, "MISSING_REQUIRED": 344, "TYPE_ERROR": 345, "RANGE_ERROR": 345}, "events_per_sec": 1069.45, "elapsed_s": 12.623, "p50_ms": 19.0, "p95_ms": 1328.0, "validator_id": "val-1b"}
+XLEN raw=20000 valid=18012 dlq=1988 pending=0
+unique routed=20000 duplicates=0 tagged=1988
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=18ms p95=964ms max=3405ms
+producer achieved_rate=1009.48/s target=1000.0
+RESULT: PASS
+exit=0
+=================== [FIXED] two
+validator summary: {"validated": 10197, "passed": 9190, "dlq": 1007, "by_reason": {"SCHEMA_VIOLATION": 255, "MISSING_REQUIRED": 250, "TYPE_ERROR": 254, "RANGE_ERROR": 248}, "events_per_sec": 467.52, "elapsed_s": 21.811, "p50_ms": 18.0, "p95_ms": 24.0, "validator_id": "val-1"}
+validator summary: {"validated": 9803, "passed": 8822, "dlq": 981, "by_reason": {"SCHEMA_VIOLATION": 242, "MISSING_REQUIRED": 247, "TYPE_ERROR": 243, "RANGE_ERROR": 249}, "events_per_sec": 429.42, "elapsed_s": 22.829, "p50_ms": 18.0, "p95_ms": 24.0, "validator_id": "val-2"}
+per-validator validated=[10197, 9803]
+XLEN raw=20000 valid=18012 dlq=1988 pending=0
+unique routed=20000 duplicates=0 tagged=1988
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=18ms p95=24ms max=27ms
+producer achieved_rate=1009.55/s target=1000.0
+RESULT: PASS
+exit=0
+=================== [FIXED] rate5000
+validator summary: {"validated": 100000, "passed": 100000, "dlq": 0, "by_reason": {}, "events_per_sec": 4536.27, "elapsed_s": 22.045, "p50_ms": 5.0, "p95_ms": 8.0, "validator_id": "val-1"}
+XLEN raw=100000 valid=100000 dlq=0 pending=0
+unique routed=100000 duplicates=0 tagged=0
+byte-identical sample: 1000/1000
+emit->validate latency from stream fields: p50=5ms p95=8ms max=17ms
+producer achieved_rate=5008.67/s target=5000.0
+RESULT: PASS
+exit=0
+=================== [FIXED] backlog
+BACKLOG drained=True n=100000 wall=10.20s wall_rate=9808 ev/s validator_reported=9273.45 ev/s
+exit=0
+=================== [FIXED] emit-gap
+producer buffering (XADD arrival - emitted_at) over 20000 events: p50=5ms p95=8ms max=10ms
+RESULT: FAIL
+  FAIL: emitted_at precedes the XADD by p95=8ms
+exit=1
+=================== [FIXED] metrics
+XLEN valid+dlq=10000  metrics:validator validated=10000 passed=9027 dlq=973
+RESULT: PASS
+exit=0
+=================== [FIXED] two-default
+attempt 0: consumers=['Dhruvs-MacBook-Neo.local-73014', 'Dhruvs-MacBook-Neo.local-73016'] tx.valid=6000 duplicates=0
+attempt 1: consumers=['Dhruvs-MacBook-Neo.local-73019', 'Dhruvs-MacBook-Neo.local-73021'] tx.valid=6000 duplicates=0
+attempt 2: consumers=['Dhruvs-MacBook-Neo.local-73024', 'Dhruvs-MacBook-Neo.local-73027'] tx.valid=6000 duplicates=0
+attempt 3: consumers=['Dhruvs-MacBook-Neo.local-73030', 'Dhruvs-MacBook-Neo.local-73032'] tx.valid=6000 duplicates=0
+attempt 4: consumers=['Dhruvs-MacBook-Neo.local-73037', 'Dhruvs-MacBook-Neo.local-73039'] tx.valid=6000 duplicates=0
+RESULT: PASS
+exit=0
+=================== [FIXED] xautoclaim
+reclaimed=10 pending by consumer={'busy': 50, 'dead': 0, 'rec': 0}
+RESULT: PASS
+exit=0
