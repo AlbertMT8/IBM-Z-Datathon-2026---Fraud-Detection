@@ -1,0 +1,15 @@
+# Datasets are too big for GitHub (100 MB limit). Download from Kaggle instead:
+#   Sparkov: https://www.kaggle.com/datasets/kartik2112/fraud-detection
+#   ULB:     https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
+Datasets/
+*.csv
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Mac junk
+.DS_Store

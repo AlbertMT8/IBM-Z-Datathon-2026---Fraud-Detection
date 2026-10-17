@@ -1,0 +1,37 @@
+{
+  "feature_names": [
+    "amt",
+    "log_amt",
+    "hour",
+    "is_night",
+    "age",
+    "is_male",
+    "log_city_pop",
+    "distance_km",
+    "log_secs_since_last",
+    "card_n_prev",
+    "amt_vs_card_avg",
+    "card_n_24h",
+    "card_amt_24h",
+    "cat_entertainment",
+    "cat_food_dining",
+    "cat_gas_transport",
+    "cat_grocery_net",
+    "cat_grocery_pos",
+    "cat_health_fitness",
+    "cat_home",
+    "cat_kids_pets",
+    "cat_misc_net",
+    "cat_misc_pos",
+    "cat_personal_care",
+    "cat_shopping_net",
+    "cat_shopping_pos",
+    "cat_travel"
+  ],
+  "threshold": 0.17385955629958588,
+  "weights": {
+    "lr": 0.1,
+    "rf": 0.1,
+    "xgb": 0.8
+  }
+}
