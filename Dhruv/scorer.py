@@ -20,14 +20,17 @@ OUTPUT (scored_event.schema.json):
         "decision": "BLOCK",             # ALLOW / REVIEW / BLOCK
         "model_version": "ens-v1",
         "scoring_duration_ms": 4.2,      # feature build + inference
-        "feature_count": 27
+        "feature_count": 27,
+        "reasons": [...]                 # only on REVIEW/BLOCK
       },
       "explanation": null                # stage 4 fills this
     }
 
-REASONS (not in the frozen schema yet, so returned separately): top 3 things that
-pushed the score UP, only for REVIEW/BLOCK:
-    [{"feature": "amount", "impact": 3.1, "text": "amount $912.40 is 14.2x this card's usual $64"}, ...]
+REASONS go inside scoring.reasons (optional field Albert added), only for REVIEW/BLOCK:
+    [{"feature": "amount", "contribution": 3.1, "value": 912.4,
+      "detail": "amount $912.40 is 14.2x this card's usual $64"}, ...]
+  contribution = how much it pushed XGBoost's score toward fraud (positive = more fraud-like).
+  score_with_reasons() also returns the list on its own, for convenience.
 
 A broken event raises ValueError — stage 2 should already have sent it to the
 dead-letter queue, this is a second safety net.
@@ -133,6 +136,8 @@ class FraudScorer:
             },
             "explanation": None,
         }
+        if reasons:  # optional field; left out for ALLOW
+            scored["scoring"]["reasons"] = reasons
         return scored, reasons
 
     def _reasons(self, contribs, feats, facts, top=3):
@@ -142,7 +147,31 @@ class FraudScorer:
             impact[g] = impact.get(g, 0.0) + float(c)
         ranked = sorted((kv for kv in impact.items() if kv[1] > 0), key=lambda kv: -kv[1])[:top]
         f = dict(zip(FEATURE_NAMES, feats))
-        return [{"feature": g, "impact": round(v, 3), "text": _describe(g, f, facts)} for g, v in ranked]
+        out = []
+        for g, v in ranked:
+            r = {"feature": g, "contribution": round(v, 3)}
+            val = _value(g, f, facts)
+            if val is not None:
+                r["value"] = val
+            r["detail"] = _describe(g, f, facts)[:200]
+            out.append(r)
+        return out
+
+
+def _value(group, f, facts):
+    """The one raw number/label behind each reason, for the explanation layer."""
+    return {
+        "amount": facts["amt"],
+        "time_of_day": facts["hour"],
+        "category": facts["category"],
+        "recent_activity": facts["card_n_24h"],
+        "time_since_last": round(facts["secs_since_last"] / 60, 1) if facts["secs_since_last"] is not None else None,
+        "age": round(f["age"], 1),
+        "distance": round(f["distance_km"], 1),
+        "city_size": int(round(np.expm1(f["log_city_pop"]))),
+        "gender": "M" if f["is_male"] else "F",
+        "card_history": int(f["card_n_prev"]),
+    }.get(group)
 
 
 def _describe(group, f, facts):

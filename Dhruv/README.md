@@ -1,7 +1,7 @@
 # Stage 3 — Fraud scoring (Dhruv)
 
-One event in (`Albert/Formatting/event.schema.json`) → one scored event out
-(`Albert/Formatting/scored_event.schema.json`), plus top 3 reasons for stage 4.
+One event in (Albert's `event.schema.json`) → one scored event out
+(Albert's `scored_event.schema.json`, with top 3 reasons in `scoring.reasons`).
 
 ## Files
 | File | What it does |
@@ -25,7 +25,7 @@ from scorer import FraudScorer
 scorer = FraudScorer()
 scorer.warm_up_from_csv("../Datasets/fraudTrain.csv")   # optional, gives cards history
 scored = scorer.score(event)                            # scored_event.schema.json dict
-scored, reasons = scorer.score_with_reasons(event)      # + reasons for stage 4
+scored, reasons = scorer.score_with_reasons(event)      # same, plus the reasons list on its own
 ```
 - Feed events **in time order** (`occurred_at`), because features depend on each card's history.
 - The scorer **never reads `event["label"]`**.
@@ -41,19 +41,22 @@ scored, reasons = scorer.score_with_reasons(event)      # + reasons for stage 4
 - `scoring_duration_ms` = feature build + inference. Reasons are computed after the clock stops, and only for REVIEW/BLOCK.
 - `model_version` = `ens-v1`. Bump `MODEL_VERSION` in `train.py` when retraining.
 
-## Reasons (not in the frozen schema yet)
+## Reasons (`scoring.reasons`, REVIEW/BLOCK only)
 ```json
-[{"feature": "recent_activity", "impact": 5.995, "text": "4 other payments totalling $1,935 on this card in the last 24h"},
- {"feature": "time_of_day", "impact": 2.274, "text": "made at 22:00 (late night)"}]
+[{"feature": "recent_activity", "contribution": 5.995, "value": 4,
+  "detail": "4 other payments totalling $1,935 on this card in the last 24h"},
+ {"feature": "time_of_day", "contribution": 2.274, "value": 22, "detail": "made at 22:00 (late night)"}]
 ```
-`impact` = how much that feature pushed XGBoost's score up (its contribution to the score, the same idea as SHAP values).
+`contribution` = how much that feature pushed XGBoost's score toward fraud (same idea as SHAP values). Left out entirely for ALLOW (the field is optional).
 
 ## Assumptions the producer must match
 - `card_id` = `sha256(str(cc_num))[:16]`, using the decimal digits of the raw card number (same as `features.card_id_from_cc_num`).
+- Read `cc_num` with `dtype=str` before hashing.
 - `occurred_at` keeps the dataset's clock time and just labels it UTC (`2019-01-01 00:00:18` → `2019-01-01T00:00:18Z`). Shifting the hours would break the time-of-day feature.
 
 ## Results (fraudTest, 555,719 payments never seen, 2,145 fraud)
 Ensemble PR-AUC 0.964. At the REVIEW cut-off, precision 0.94 and recall 0.91. Latency on a MacBook: p50 ~4 ms, p95 ~5 ms per event. Not yet measured on LinuxONE.
+Also checked: 500 events from Albert's `stubgen.py` score with 0 errors under his own validators and map cleanly through his `to_row()`.
 
 ## Open-source used
 - Sparkov dataset: https://www.kaggle.com/datasets/kartik2112/fraud-detection
