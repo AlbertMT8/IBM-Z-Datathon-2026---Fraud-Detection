@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "RawTransactionEvent",
+  "description": "CONTRACT 1 of 3. Emitted by the producer (stage 1), validated at stage 2, consumed by the scorer (stage 3). One card transaction replayed from the Sparkov dataset as a live event. Frozen at v1.0.0 — any change must be announced to the whole team and the version bumped.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "emitted_at",
+    "source_trans_num",
+    "transaction",
+    "cardholder"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Bump only by team announcement. Validation rejects anything else."
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Generated fresh by the producer on every emit. NOT the dataset's trans_num — a replay of the same row produces a new event_id, which is what makes load-test runs distinguishable."
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC with milliseconds. THIS IS THE LATENCY CLOCK START. End-to-end latency is defined as committed_at (Postgres) minus emitted_at. Set it at the instant of emit, not at the top of the loop iteration."
+    },
+    "run_id": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Optional tag for a load-test run, e.g. 'loadtest-2000eps'. Carried through to Postgres so results can be reported per run. Defaults to 'default' downstream if absent."
+    },
+    "source_trans_num": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The dataset's trans_num. Traceability back to the CSV row."
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "occurred_at",
+        "unix_time",
+        "card_id",
+        "card_last4",
+        "amount",
+        "merchant",
+        "category",
+        "merchant_lat",
+        "merchant_lon"
+      ],
+      "properties": {
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "From trans_date_trans_time, converted to RFC3339 UTC. This is 2019-2020 dataset time, NOT wall-clock emit time. Never use this for latency."
+        },
+        "unix_time": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "From the dataset's unix_time column. Kept because velocity features are cheaper to compute on an int."
+        },
+        "card_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "SHA-256 of the raw cc_num, first 16 hex chars. Stable per card across the whole run, so per-card velocity features work. The raw cc_num never enters the pipeline."
+        },
+        "card_last4": {
+          "type": "string",
+          "pattern": "^[0-9]{4}$",
+          "description": "Display only. Never a model feature."
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000000,
+          "description": "From amt. USD, 2dp. Max is a sanity bound well above the dataset's real max (~$28,949) so real rows never hit the DLQ by accident."
+        },
+        "merchant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "DELIBERATELY NOT AN ENUM. The 14 known Sparkov values are entertainment, food_dining, gas_transport, grocery_net, grocery_pos, health_fitness, home, kids_pets, misc_net, misc_pos, personal_care, shopping_net, shopping_pos, travel. Do not enum this until someone has run df.category.unique() on the actual CSV — a wrong enum value sends every matching row to the DLQ."
+        },
+        "merchant_lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "merchant_lon": { "type": "number", "minimum": -180, "maximum": 180 }
+      }
+    },
+    "cardholder": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cardholder context needed for geo-distance and demographic features. The dataset's first, last and street columns are DROPPED AT THE PRODUCER and never appear here — synthetic or not, name-and-address does not belong on a shared cloud instance, and saying so out loud is worth a point with a judge.",
+      "required": ["city", "state", "zip", "lat", "lon", "city_pop"],
+      "properties": {
+        "city": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "state": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "zip": {
+          "type": "string",
+          "pattern": "^[0-9]{5}$",
+          "description": "STRING, zero-padded to 5. The CSV parses zip as an int, which silently drops the leading zero on every New England ZIP. Read it with dtype=str or zfill(5) at the producer or you will DLQ thousands of valid rows."
+        },
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "city_pop": { "type": "integer", "minimum": 0 },
+        "job": { "type": "string", "maxLength": 128 },
+        "gender": { "type": "string", "enum": ["M", "F"] },
+        "dob": { "type": "string", "format": "date" }
+      }
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["is_fraud"],
+      "description": "GROUND TRUTH. Segregated from transaction/cardholder on purpose. Carried so the dashboard can show live precision and recall, which is a strong demo. HARD RULE: the scorer (stage 3) must not read this object. Anything under transaction/cardholder is a legal feature; anything here is not.",
+      "properties": {
+        "is_fraud": { "type": "integer", "enum": [0, 1] }
+      }
+    }
+  }
+}
