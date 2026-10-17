@@ -1,4 +1,5 @@
 {
+  "model_version": "ens-v1",
   "feature_names": [
     "amt",
     "log_amt",
@@ -29,6 +30,7 @@
     "cat_travel"
   ],
   "threshold": 0.17385955629958588,
+  "block_threshold": 0.6063005210489456,
   "weights": {
     "lr": 0.1,
     "rf": 0.1,

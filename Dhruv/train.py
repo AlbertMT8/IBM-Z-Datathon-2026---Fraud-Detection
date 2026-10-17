@@ -30,11 +30,12 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from features import FEATURE_NAMES, CardMemory
+from features import FEATURE_NAMES, CardMemory, rows_from_csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "Datasets")
 OUT = os.path.join(HERE, "models")
+MODEL_VERSION = "ens-v1"  # bump whenever you retrain with changes, so the dashboard can tell runs apart
 COLS = ["trans_date_trans_time", "cc_num", "category", "amt", "gender", "lat", "long",
         "city_pop", "dob", "merch_lat", "merch_long", "is_fraud"]
 
@@ -42,7 +43,7 @@ COLS = ["trans_date_trans_time", "cc_num", "category", "amt", "gender", "lat", "
 def build_features(df):
     """Replay payments in time order through CardMemory -> feature matrix."""
     mem = CardMemory()
-    rows = df[COLS[:-1]].to_dict("records")
+    rows = rows_from_csv(df)
     X = np.empty((len(rows), len(FEATURE_NAMES)), dtype=np.float32)
     for i, p in enumerate(rows):
         X[i], _ = mem.compute(p)
@@ -124,7 +125,12 @@ def main():
     prec, rec, thr = precision_recall_curve(y[val_i], pv["ensemble"])
     f1 = 2 * prec * rec / np.maximum(prec + rec, 1e-9)
     threshold = float(thr[np.argmax(f1[:-1])])
-    print(f"\nAlert cut-off chosen on validation: {threshold:.3f}")
+    # BLOCK cut-off: the lowest score where, on validation, at least 99% of payments
+    # above it are real fraud. Between the two cut-offs -> REVIEW (a human looks).
+    ok = np.where(prec[:-1] >= 0.99)[0]
+    block_threshold = float(thr[ok[0]]) if len(ok) else 0.99
+    block_threshold = max(block_threshold, threshold)
+    print(f"\nAlert (REVIEW) cut-off chosen on validation: {threshold:.3f} | BLOCK cut-off: {block_threshold:.3f}")
 
     print(f"\nVALIDATION (last 15% of fraudTrain, {len(val_i):,} payments, {y[val_i].sum()} fraud):")
     for n, p in pv.items():
@@ -143,7 +149,8 @@ def main():
     joblib.dump(models["rf"], os.path.join(OUT, "rf.joblib"))
     models["xgb"].get_booster().save_model(os.path.join(OUT, "xgb.json"))
     with open(os.path.join(OUT, "meta.json"), "w") as f:
-        json.dump({"feature_names": FEATURE_NAMES, "threshold": threshold, "weights": weights}, f, indent=2)
+        json.dump({"model_version": MODEL_VERSION, "feature_names": FEATURE_NAMES, "threshold": threshold,
+                   "block_threshold": block_threshold, "weights": weights}, f, indent=2)
     print(f"\nSaved models to {OUT}")
 
 

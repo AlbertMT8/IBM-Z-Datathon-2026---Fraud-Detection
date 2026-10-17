@@ -1,46 +1,53 @@
 """
-scorer.py — the thing teammates call. One payment in, one verdict out.
+scorer.py — stage 3. One event in (Albert's event.schema.json), one scored event
+out (Albert's scored_event.schema.json).
 
     from scorer import FraudScorer
-    scorer = FraudScorer()           # loads models once (slow part, ~1s)
-    result = scorer.score(payment)   # call for every payment (fast part, ~ms)
+    scorer = FraudScorer()                        # loads models once (~1s)
+    scorer.warm_up_from_csv("fraudTrain.csv")     # optional: give cards their history
+    scored = scorer.score(event)                  # every event (~ms)
+    scored, reasons = scorer.score_with_reasons(event)   # same, plus reasons for stage 4
 
-INPUT  `payment`: a dict with the Sparkov fields (extra fields are ignored):
-    trans_num, trans_date_trans_time ("2020-06-21 12:14:25"), cc_num, category,
-    amt, gender, lat, long, city_pop, dob ("1968-03-19"), merch_lat, merch_long
-
-OUTPUT: a dict
+OUTPUT (scored_event.schema.json):
     {
-      "trans_num": "2da90c7d...",
-      "fraud_probability": 0.93,           # 0-1, weighted average of the 3 models
-      "is_alert": True,                    # probability >= the cut-off chosen in training
-      "model_scores": {"lr": .., "rf": .., "xgb": ..},
-      "reasons": [                         # top 3 things that pushed the score UP
-          {"feature": "amount", "impact": 3.1, "text": "amount $912.40 is 14.2x this card's usual $64"},
-          ...
-      ],
-      "latency_ms": 1.8
+      "schema_version": "1.0.0",
+      "event": { ...the input event, untouched... },
+      "scoring": {
+        "scored_at": "2026-10-17T15:04:05.123Z",
+        "model_scores": {"xgboost": 0.99, "random_forest": 0.71, "logistic_regression": 0.40},
+        "ensemble_score": 0.90,          # weighted average (weights in models/meta.json)
+        "threshold": 0.17,               # REVIEW cut-off
+        "decision": "BLOCK",             # ALLOW / REVIEW / BLOCK
+        "model_version": "ens-v1",
+        "scoring_duration_ms": 4.2,      # feature build + inference
+        "feature_count": 27
+      },
+      "explanation": null                # stage 4 fills this
     }
 
-A missing/broken field raises ValueError — the pipeline should catch that and send the
-payment to the dead-letter queue instead of crashing.
+REASONS (not in the frozen schema yet, so returned separately): top 3 things that
+pushed the score UP, only for REVIEW/BLOCK:
+    [{"feature": "amount", "impact": 3.1, "text": "amount $912.40 is 14.2x this card's usual $64"}, ...]
 
-The scorer keeps CardMemory (each card's recent history), so feed payments in time order.
+A broken event raises ValueError — stage 2 should already have sent it to the
+dead-letter queue, this is a second safety net.
+
+The scorer never reads event["label"]. Feed events in time order (CardMemory).
 """
 
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import joblib
 import numpy as np
+import pandas as pd
 import xgboost as xgb
 
-from features import FEATURE_NAMES, CardMemory
+from features import FEATURE_NAMES, CardMemory, flatten_event, rows_from_csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REQUIRED = ["trans_date_trans_time", "cc_num", "category", "amt", "lat", "long",
-            "city_pop", "dob", "merch_lat", "merch_long"]
 
 # Several features describe the same idea; group them so reasons aren't repetitive.
 GROUP = {"amt": "amount", "log_amt": "amount", "amt_vs_card_avg": "amount",
@@ -50,13 +57,19 @@ GROUP = {"amt": "amount", "log_amt": "amount", "amt_vs_card_avg": "amount",
          "log_city_pop": "city_size", "distance_km": "distance", "card_n_prev": "card_history"}
 
 
+def _now_rfc3339():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class FraudScorer:
     def __init__(self, model_dir=os.path.join(HERE, "models")):
         with open(os.path.join(model_dir, "meta.json")) as f:
             meta = json.load(f)
         assert meta["feature_names"] == FEATURE_NAMES, "models were trained with different features"
+        self.model_version = meta["model_version"]
         self.threshold = meta["threshold"]
-        self.weights = meta.get("weights", {"lr": 1 / 3, "rf": 1 / 3, "xgb": 1 / 3})
+        self.block_threshold = meta["block_threshold"]
+        self.weights = meta["weights"]
         self.lr = joblib.load(os.path.join(model_dir, "lr.joblib"))
         self.rf = joblib.load(os.path.join(model_dir, "rf.joblib"))
         self.xgb = xgb.Booster()
@@ -64,45 +77,63 @@ class FraudScorer:
         self.xgb.set_param({"nthread": 1})
         self.memory = CardMemory()
 
-    def warm_up(self, past_payments):
+    def warm_up_from_csv(self, csv_path):
         """Load card history without scoring (a real bank already knows its cards' past)."""
-        for p in past_payments:
+        df = pd.read_csv(csv_path).sort_values("trans_date_trans_time", kind="stable")
+        for p in rows_from_csv(df):
             self.memory.compute(p)
+        return len(df)
 
-    def score(self, payment, explain_all=False):
+    def score(self, event):
+        return self.score_with_reasons(event)[0]
+
+    def score_with_reasons(self, event):
         start = time.perf_counter()
-        missing = [k for k in REQUIRED if payment.get(k) in (None, "")]
-        if missing:
-            raise ValueError(f"payment missing fields: {missing}")
         try:
-            feats, facts = self.memory.compute(payment)
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"bad payment field: {e}") from e
+            feats, facts = self.memory.compute(flatten_event(event))
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"bad event: {type(e).__name__}: {e}") from e
 
         x = np.asarray([feats], dtype=np.float32)
         dm = xgb.DMatrix(x, feature_names=FEATURE_NAMES)
-        p_lr = float(self.lr.predict_proba(x)[0, 1])
-        p_rf = float(self.rf.predict_proba(x)[0, 1])
-        p_xgb = float(self.xgb.predict(dm)[0])
+        p = {"logistic_regression": float(self.lr.predict_proba(x)[0, 1]),
+             "random_forest": float(self.rf.predict_proba(x)[0, 1]),
+             "xgboost": float(self.xgb.predict(dm)[0])}
         w = self.weights
-        prob = w["lr"] * p_lr + w["rf"] * p_rf + w["xgb"] * p_xgb
+        prob = w["lr"] * p["logistic_regression"] + w["rf"] * p["random_forest"] + w["xgb"] * p["xgboost"]
+        prob = min(max(prob, 0.0), 1.0)
 
-        is_alert = prob >= self.threshold
+        if prob >= self.block_threshold:
+            decision = "BLOCK"
+        elif prob >= self.threshold:
+            decision = "REVIEW"
+        else:
+            decision = "ALLOW"
+        duration_ms = (time.perf_counter() - start) * 1000
+
         reasons = []
-        if is_alert or explain_all:
-            # How much each feature pushed XGBoost's score up (+) or down (-).
-            # Costs ~1 ms, so by default only alerts get reasons.
+        if decision != "ALLOW":
+            # How much each feature pushed XGBoost's score up (+) or down (-). ~1 ms, so alerts only.
+            # Kept outside scoring_duration_ms: that field is "feature build + inference".
             contribs = self.xgb.predict(dm, pred_contribs=True)[0][:-1]  # last value is the baseline
             reasons = self._reasons(contribs, feats, facts)
 
-        return {
-            "trans_num": payment.get("trans_num"),
-            "fraud_probability": round(prob, 4),
-            "is_alert": bool(is_alert),
-            "model_scores": {"lr": round(p_lr, 4), "rf": round(p_rf, 4), "xgb": round(p_xgb, 4)},
-            "reasons": reasons,
-            "latency_ms": round((time.perf_counter() - start) * 1000, 3),
+        scored = {
+            "schema_version": "1.0.0",
+            "event": event,  # passed through untouched
+            "scoring": {
+                "scored_at": _now_rfc3339(),
+                "model_scores": {k: round(v, 6) for k, v in p.items()},
+                "ensemble_score": round(prob, 6),
+                "threshold": self.threshold,
+                "decision": decision,
+                "model_version": self.model_version,
+                "scoring_duration_ms": round(duration_ms, 3),
+                "feature_count": len(FEATURE_NAMES),
+            },
+            "explanation": None,
         }
+        return scored, reasons
 
     def _reasons(self, contribs, feats, facts, top=3):
         impact = {}
@@ -145,8 +176,8 @@ def _describe(group, f, facts):
 _default = None
 
 
-def score(payment):
+def score(event):
     global _default
     if _default is None:
         _default = FraudScorer()
-    return _default.score(payment)
+    return _default.score(event)
