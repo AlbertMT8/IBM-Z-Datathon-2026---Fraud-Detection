@@ -16,3 +16,7 @@ __pycache__/
 
 # Test outputs from the stage 3/4 runners
 *.jsonl
+
+# Local AI model + llama.cpp binaries (big downloads, not code)
+local_llm/
+*.gguf
