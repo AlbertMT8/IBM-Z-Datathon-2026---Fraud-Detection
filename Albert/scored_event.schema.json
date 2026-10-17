@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scored_event.schema.json",
+  "title": "ScoredTransactionEvent",
+  "description": "CONTRACT 2 of 3. Emitted by the scorer (stage 3), enriched by the explanation layer (stage 4), written to Postgres (stage 5). Wraps the original event unchanged so no downstream stage ever has to go back upstream for a field. Frozen at v1.0.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event", "scoring", "explanation"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+
+    "event": {
+      "$ref": "event.schema.json",
+      "description": "The raw event, PASSED THROUGH BYTE-FOR-BYTE. Do not mutate, reorder or strip fields. event.event_id is the join key for the whole pipeline."
+    },
+
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scored_at",
+        "model_scores",
+        "ensemble_score",
+        "threshold",
+        "decision",
+        "model_version",
+        "scoring_duration_ms"
+      ],
+      "properties": {
+        "scored_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC3339 UTC, millisecond precision."
+        },
+        "model_scores": {
+          "type": "object",
+          "minProperties": 2,
+          "description": "Per-model fraud probability, keyed by model name, e.g. {\"xgboost\": 0.91, \"random_forest\": 0.84, \"logistic_regression\": 0.77}. minProperties:2 is deliberate — it makes the 'multi-model' prerequisite-lab requirement machine-enforced. A single-model submission fails validation.",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "ensemble_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The combined fraud probability. How it is combined is Part 2's call; it just has to be documented in the README."
+        },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The threshold in force when this event was scored. Stored per-event so a mid-run threshold change does not silently invalidate earlier rows."
+        },
+        "decision": {
+          "type": "string",
+          "enum": ["ALLOW", "REVIEW", "BLOCK"],
+          "description": "Derived from ensemble_score and threshold. Only REVIEW and BLOCK appear in the alert feed."
+        },
+        "model_version": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Identifies the trained artifact set, e.g. 'ens-v3'. Bump it whenever models are retrained so the dashboard can tell runs apart."
+        },
+        "scoring_duration_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time inside the scorer only, feature-build plus inference. BUDGET: p95 <= 25 ms. Above that the end-to-end latency headline stops being impressive."
+        },
+        "feature_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional. Number of features fed to the models. Useful in the video."
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "Optional. Why the model scored it this way — the return value of score_with_reasons(), carried INSIDE the scored event so the explanation layer has it without a second call back to the scorer. Deliberately permissive: a plain string or a {feature, contribution} object both validate, so the scorer's existing return shape plugs in unchanged. Added after v1.0.0 freeze as a backward-compatible optional field; events without it still validate.",
+          "items": {
+            "oneOf": [
+              { "type": "string", "maxLength": 200 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["feature"],
+                "properties": {
+                  "feature": { "type": "string", "maxLength": 64 },
+                  "contribution": {
+                    "type": "number",
+                    "description": "Signed. Positive pushes toward fraud."
+                  },
+                  "value": {
+                    "description": "The feature's actual value for this event, if useful to the explanation."
+                  },
+                  "detail": { "type": "string", "maxLength": 200 }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+
+    "explanation": {
+      "description": "NULLABLE BY DESIGN. Stage 3 emits null. Stage 4 fills it. A failure, timeout or skip in stage 4 must never prevent the row being written — a scored transaction with no explanation is still a scored transaction.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "generated_at"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["ok", "skipped", "failed", "timeout"],
+              "description": "'skipped' is the normal status for ALLOW decisions if the team chooses to explain alerts only. 'failed' and 'timeout' must still produce a row."
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "One plain-language sentence an analyst can act on. Required when status is 'ok'. 'High fraud probability' is a failing explanation; 'Card used in Ohio 40 minutes after a Nevada purchase, merchant category unusual for this cardholder' is a passing one."
+            },
+            "generated_at": { "type": "string", "format": "date-time" },
+            "duration_ms": {
+              "type": "number",
+              "minimum": 0,
+              "description": "BUDGET: hard timeout at 800 ms. See the decision note in README.md about keeping this off the synchronous latency path."
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "e.g. 'watsonx-assistant'."
+            },
+            "error": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "Populated when status is 'failed' or 'timeout'. Surfaced on the dashboard as a health indicator."
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "status": { "const": "ok" } } },
+              "then": { "required": ["text"] }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
