@@ -2,7 +2,7 @@
 train.py — teaches the three models what fraud looks like, then grades them
 on payments they have never seen.
 
-Run:  .venv/bin/python train.py
+Run:  ../.venv/bin/python train.py
 Makes: models/lr.joblib, models/rf.joblib, models/xgb.json, models/meta.json
 
 Steps:
@@ -33,7 +33,7 @@ from sklearn.preprocessing import StandardScaler
 from features import FEATURE_NAMES, CardMemory, rows_from_csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "..", "Datasets")
+DATA = os.path.join(HERE, "..", "..", "Datasets")  # repo-root/Datasets
 OUT = os.path.join(HERE, "models")
 MODEL_VERSION = "ens-v1"  # bump whenever you retrain with changes, so the dashboard can tell runs apart
 COLS = ["trans_date_trans_time", "cc_num", "category", "amt", "gender", "lat", "long",

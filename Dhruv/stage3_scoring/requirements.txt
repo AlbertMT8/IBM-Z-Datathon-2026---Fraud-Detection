@@ -1,0 +1,6 @@
+pandas
+numpy
+scikit-learn
+xgboost
+joblib
+jsonschema  # only for demo_stream.py schema checks

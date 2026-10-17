@@ -13,3 +13,6 @@ __pycache__/
 
 # Mac junk
 .DS_Store
+
+# Test outputs from the stage 3/4 runners
+*.jsonl
