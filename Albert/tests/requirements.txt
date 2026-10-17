@@ -1,0 +1,5 @@
+# Test-only dependencies (never installed in the images). Pure Python.
+-r ../stage2_validator/requirements.txt
+pytest>=8,<9
+pytest-timeout>=2.3,<3
+fakeredis>=2.20,<3

@@ -1,0 +1,5 @@
+# Local artifacts from the stage 1/2 tests and live checks
+.pytest_cache/
+.producer_state.json
+*.tmp
+/live/
