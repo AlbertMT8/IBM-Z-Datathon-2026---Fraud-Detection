@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZSCORE Live</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --ink: #14171f; --muted: #5d6573; --line: #e3e6ec;
+    --accent: #1f5fd6; --allow: #2f8a4b; --review: #c27a00; --block: #c4312a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 18px; padding: 18px 28px 10px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 26px; letter-spacing: .5px; }
+  header .sub { color: var(--muted); }
+  .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #aab; }
+  .dot.ok { background: var(--allow); } .dot.bad { background: var(--block); }
+  main { padding: 0 28px 28px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .panel h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .kpi { grid-column: span 2; }
+  .kpi .v { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .kpi .u { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 3px; }
+  .kpi .note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .w4 { grid-column: span 4; } .w6 { grid-column: span 6; } .w8 { grid-column: span 8; } .w12 { grid-column: span 12; }
+  @media (max-width: 1100px) { .kpi { grid-column: span 4; } .w4, .w6, .w8 { grid-column: span 12; } }
+  @media (max-width: 640px) { main { padding: 0 12px 16px; } .kpi { grid-column: span 6; } header { padding: 14px 12px 8px; } }
+  svg { width: 100%; height: 170px; display: block; }
+  .bars .row { display: grid; grid-template-columns: 80px 1fr 90px; align-items: center; gap: 10px; margin: 9px 0; }
+  .bars .track { height: 18px; background: #eef0f4; border-radius: 4px; overflow: hidden; }
+  .bars .fill { height: 100%; }
+  .bars .n { text-align: right; font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; color: #fff; }
+  .ALLOW { background: var(--allow); } .REVIEW { background: var(--review); } .BLOCK { background: var(--block); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.why { color: #2b3240; }
+  .scroll { overflow-x: auto; }
+  .grid2 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .lbl { font-size: 12px; color: var(--muted); }
+  .stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 1100px) { .stages { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .stages { grid-template-columns: 1fr; } }
+  .stage h3 { margin: 0 0 6px; font-size: 15px; }
+  .stage dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 13px; }
+  .stage dt { color: var(--muted); } .stage dd { margin: 0; text-align: right; font-family: var(--mono); overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-style: italic; }
+  .err { color: var(--block); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ZSCORE</h1>
+  <span class="sub">Real-time card fraud scoring on IBM LinuxONE</span>
+  <span class="sub">run <b id="run">–</b></span>
+  <span class="live"><span class="dot" id="dot"></span><span id="updated">connecting…</span></span>
+</header>
+<main>
+  <section class="panel kpi"><h2>Rows stored</h2><div class="v" id="k-rows">–</div><div class="note">in Postgres (all runs)</div></section>
+  <section class="panel kpi"><h2>Throughput</h2><div class="v"><span id="k-eps">–</span><span class="u">rows/s</span></div><div class="note">committed, last 60 s</div></section>
+  <section class="panel kpi"><h2>Latency p50</h2><div class="v"><span id="k-p50">–</span><span class="u">ms</span></div><div class="note">emit → Postgres, last 60 s</div></section>
+  <section class="panel kpi"><h2>Latency p95</h2><div class="v"><span id="k-p95">–</span><span class="u">ms</span></div><div class="note">emit → Postgres, last 60 s</div></section>
+  <section class="panel kpi"><h2>Latency p99</h2><div class="v"><span id="k-p99">–</span><span class="u">ms</span></div><div class="note">emit → Postgres, last 60 s</div></section>
+  <section class="panel kpi"><h2>Dead-lettered</h2><div class="v" id="k-dlq">–</div><div class="note">broken events, never crashed a stage</div></section>
+
+  <section class="panel w8"><h2>Rows committed per second (last 60 s)</h2><svg id="chart" viewBox="0 0 600 170" preserveAspectRatio="none"></svg></section>
+  <section class="panel w4"><h2>Decisions (this run)</h2><div class="bars" id="decisions"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div><div class="lbl">alert precision</div><div class="big" id="q-prec">–</div></div>
+      <div><div class="lbl">fraud recall</div><div class="big" id="q-rec">–</div></div>
+      <div><div class="lbl">labelled rows</div><div class="big" id="q-n">–</div></div>
+    </div>
+    <div class="lbl" style="margin-top:4px">REVIEW+BLOCK vs. dataset label (evaluation only)</div>
+  </section>
+
+  <section class="panel w12"><h2>End-to-end latency, whole run (producer emit → Postgres commit)</h2>
+    <div class="grid2" style="grid-template-columns: repeat(6, 1fr)">
+      <div><div class="lbl">events</div><div class="big" id="r-n">–</div></div>
+      <div><div class="lbl">sustained</div><div class="big"><span id="r-eps">–</span><span class="u"> rows/s</span></div></div>
+      <div><div class="lbl">p50</div><div class="big"><span id="r-p50">–</span><span class="u"> ms</span></div></div>
+      <div><div class="lbl">p95</div><div class="big"><span id="r-p95">–</span><span class="u"> ms</span></div></div>
+      <div><div class="lbl">p99</div><div class="big"><span id="r-p99">–</span><span class="u"> ms</span></div></div>
+      <div><div class="lbl">max</div><div class="big"><span id="r-max">–</span><span class="u"> ms</span></div></div>
+    </div>
+  </section>
+
+  <section class="panel w12"><h2>Live alert feed (latest 20 REVIEW / BLOCK)</h2><div class="scroll"><table>
+    <thead><tr><th>committed</th><th>decision</th><th style="text-align:right">score</th><th style="text-align:right">amount</th><th>merchant</th><th>cardholder</th><th>why (explanation)</th></tr></thead>
+    <tbody id="alerts"></tbody></table></div></section>
+
+  <section class="panel w6"><h2>Dead-letter queue by stage and reason</h2><div class="scroll"><table>
+    <thead><tr><th>stage</th><th>reason</th><th style="text-align:right">total</th><th style="text-align:right">last 60 s</th></tr></thead>
+    <tbody id="dlq"></tbody></table></div></section>
+  <section class="panel w6"><h2>Pipeline</h2>
+    <div class="lbl" style="line-height:1.7">producer → <b>tx.raw</b> → validator ×2 → <b>tx.valid</b> → scorer → <b>tx.scored</b> → explainer → <b>tx.explained</b> → storer → Postgres<br>
+    every stage → <b>tx.dlq</b> → dlq-storer → Postgres</div>
+    <div class="err" id="errors"></div>
+  </section>
+
+  <section class="panel w12"><h2>Per-stage live numbers (Redis metrics hashes, as published)</h2><div class="stages" id="stages"></div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const num = (v, d = 0) => (v === null || v === undefined || v === "" || isNaN(Number(v))) ? "–"
+  : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const COLORS = {ALLOW: "var(--allow)", REVIEW: "var(--review)", BLOCK: "var(--block)"};
+
+function chart(series) {
+  const svg = $("chart"), W = 600, H = 170, P = 22;
+  const ys = series.map((p) => p.n), max = Math.max(1, ...ys);
+  const x = (i) => P + (i * (W - 2 * P)) / Math.max(1, series.length - 1);
+  const y = (v) => H - P - (v / max) * (H - 2 * P);
+  const pts = series.map((p, i) => `${x(i).toFixed(1)},${y(p.n).toFixed(1)}`).join(" ");
+  svg.innerHTML =
+    `<line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" stroke="#d7dbe3"/>` +
+    `<line x1="${P}" y1="${y(max)}" x2="${W - P}" y2="${y(max)}" stroke="#eef0f4"/>` +
+    `<text x="${P}" y="${y(max) - 5}" font-size="12" fill="#5d6573">${num(max)} rows/s</text>` +
+    `<text x="${P}" y="${H - 5}" font-size="12" fill="#5d6573">−60 s</text>` +
+    `<text x="${W - P}" y="${H - 5}" font-size="12" fill="#5d6573" text-anchor="end">now</text>` +
+    `<polyline points="${pts}" fill="none" stroke="#1f5fd6" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`;
+}
+
+function render(s) {
+  $("run").textContent = s.run_id ?? "–";
+  const t = s.totals || {}, l = s.latency_60s || {}, th = s.throughput_60s || {};
+  $("k-rows").textContent = num(t.rows_stored);
+  $("k-dlq").textContent = num(t.dlq_stored);
+  $("k-eps").textContent = num(th.events_per_sec, 1);
+  $("k-p50").textContent = num(l.p50_ms, 0);
+  $("k-p95").textContent = num(l.p95_ms, 0);
+  $("k-p99").textContent = num(l.p99_ms, 0);
+  if (s.throughput_series) chart(s.throughput_series);
+
+  const d = s.decisions || {}, tot = Math.max(1, (d.ALLOW || 0) + (d.REVIEW || 0) + (d.BLOCK || 0));
+  $("decisions").innerHTML = ["ALLOW", "REVIEW", "BLOCK"].map((k) =>
+    `<div class="row"><span class="pill ${k}">${k}</span><div class="track"><div class="fill" style="width:${(100 * (d[k] || 0) / tot).toFixed(1)}%;background:${COLORS[k]}"></div></div><span class="n">${num(d[k] || 0)}</span></div>`).join("");
+  const q = s.quality || {};
+  $("q-prec").textContent = q.precision == null ? "–" : (100 * q.precision).toFixed(1) + "%";
+  $("q-rec").textContent = q.recall == null ? "–" : (100 * q.recall).toFixed(1) + "%";
+  $("q-n").textContent = num(q.total);
+
+  const rl = s.run_latency || {}, rs = s.run_summary || {};
+  $("r-n").textContent = num(rl.n); $("r-eps").textContent = num(rs.sustained_eps, 0);
+  $("r-p50").textContent = num(rl.p50_ms); $("r-p95").textContent = num(rl.p95_ms);
+  $("r-p99").textContent = num(rl.p99_ms); $("r-max").textContent = num(rl.max_ms);
+
+  const a = s.alerts || [];
+  $("alerts").innerHTML = a.length ? a.map((r) => `<tr>
+      <td class="num">${esc(new Date(r.committed_at).toLocaleTimeString())}</td>
+      <td><span class="pill ${esc(r.decision)}">${esc(r.decision)}</span></td>
+      <td class="num">${num(r.ensemble_score, 3)}</td>
+      <td class="num">$${num(r.amount, 2)}</td>
+      <td>${esc(r.merchant)}<div class="lbl">${esc(r.category)}</div></td>
+      <td>${esc(r.holder_city)}, ${esc(r.holder_state)}<div class="lbl">card ••${esc(r.card_last4)}</div></td>
+      <td class="why">${esc(r.explanation_text) || '<span class="empty">no explanation yet</span>'}</td></tr>`).join("")
+    : `<tr><td colspan="7" class="empty">no alerts yet</td></tr>`;
+
+  const q2 = s.dlq || [];
+  $("dlq").innerHTML = q2.length ? q2.map((r) => `<tr><td>${esc(r.stage)}</td><td>${esc(r.reason_code)}</td>
+      <td class="num">${num(r.total)}</td><td class="num">${num(r.last_60s)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">nothing dead-lettered</td></tr>`;
+
+  const st = s.stages || {};
+  $("stages").innerHTML = Object.entries(st).map(([key, h]) => {
+    const rows = Object.entries(h);
+    return `<div class="panel stage"><h3>${esc(key.replace("metrics:", ""))}</h3>${rows.length
+      ? `<dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`
+      : '<div class="empty">no metrics published yet</div>'}</div>`;
+  }).join("");
+
+  const errs = Object.entries(s.errors || {});
+  $("errors").textContent = errs.length ? "Unavailable: " + errs.map(([k, v]) => `${k} (${v})`).join("; ") : "";
+}
+
+async function tick() {
+  try {
+    const res = await fetch("/api/state", {cache: "no-store"});
+    if (!res.ok) throw new Error(res.status);
+    render(await res.json());
+    $("dot").className = "dot ok";
+    $("updated").textContent = "live · " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("dot").className = "dot bad";
+    $("updated").textContent = "disconnected (" + e.message + ")";
+  }
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
