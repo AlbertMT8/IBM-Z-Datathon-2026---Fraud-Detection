@@ -2,12 +2,15 @@
 (leading unnamed index column, 22 named columns), rows deliberately unsorted."""
 import csv, random, sys, datetime as dt
 
+# usage: gen_sparkov.py OUT.csv [ROWS] [START_DAY]
+# START_DAY shifts the 30-day window, e.g. 0 for a train-like file and 31 for a test-like file.
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 60000
 out = sys.argv[1]
-rng = random.Random(7)
+start_day = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+rng = random.Random(7 + start_day)
 cats = ["misc_net", "grocery_pos", "entertainment", "gas_transport", "misc_pos", "shopping_net", "food_dining"]
 states = ["NC", "WA", "ID", "MT", "VA", "NY", "TX", "CA"]
-base = 1325376018
+base = 1325376018 + start_day * 86400
 cols = ["", "trans_date_trans_time", "cc_num", "merchant", "category", "amt", "first", "last",
         "gender", "street", "city", "state", "zip", "lat", "long", "city_pop", "job", "dob",
         "trans_num", "unix_time", "merch_lat", "merch_long", "is_fraud"]

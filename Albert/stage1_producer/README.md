@@ -1,6 +1,6 @@
 # Stage 1 — Transaction Producer
 
-Streams the Sparkov `fraudTrain.csv` dataset into the Redis stream `tx.raw`
+Streams the Sparkov `fraudTest.csv` dataset into the Redis stream `tx.raw`
 at a paced, configurable rate. Every event validates against
 the team's v1.0.0 contract, [`Albert/New stuff/event.schema.json`](../New%20stuff/event.schema.json)
 (shared with the downstream validator / DLQ / scorer).
@@ -59,12 +59,15 @@ pip install -r producer/requirements.txt
 
 ## Prepare the sorted CSV (one-time)
 
+**Replay `fraudTest.csv`, never `fraudTrain.csv`.** The stage 3 scorer trained on fraudTrain and loads it as
+card history at start-up, so replaying it would score data the models already saw and count every payment twice.
+
 The raw file is not guaranteed sorted. External-merge-sort by `trans_date_trans_time`
 into `data/sorted.csv` so the producer can stream row-by-row:
 
 ```sh
 python stage1_producer/producer.py prepare \
-    --input data/fraudTrain.csv \
+    --input data/fraudTest.csv \
     --output data/sorted.csv
 ```
 
@@ -150,8 +153,8 @@ pytest -q tests/
 
 # Live end-to-end checks against a real Redis (loss, DLQ == injected,
 # byte-identity, ordering, rate, SIGKILL recovery, two validators):
-python tests/live/gen_sparkov.py live/fraudTrain.csv 60000   # or use the real CSV
-python stage1_producer/producer.py prepare --input live/fraudTrain.csv --output live/sorted.csv
+python tests/live/gen_sparkov.py live/fraudTest.csv 60000    # or use the real CSV
+python stage1_producer/producer.py prepare --input live/fraudTest.csv --output live/sorted.csv
 LIVE_DIR=live python tests/live/live_check.py basic          # kill-same | kill-new | two | backlog
 ```
 

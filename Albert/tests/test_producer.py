@@ -657,3 +657,9 @@ def test_run_id_is_omitted_when_not_set() -> None:
     ev = prod.build_event({**SAMPLE_ROWS[0]}, now_ms=1)
     assert "run_id" not in ev
     assert not list(VALIDATOR.iter_errors(ev))
+
+
+def test_prepare_defaults_to_fraud_test_not_the_scorers_training_file() -> None:
+    # The scorer warms up on fraudTrain.csv; the producer must replay fraudTest.csv.
+    args = prod.build_parser().parse_args(["prepare"])
+    assert args.input == "data/fraudTest.csv"

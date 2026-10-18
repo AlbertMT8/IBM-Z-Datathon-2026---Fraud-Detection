@@ -25,3 +25,7 @@ local_llm/
 *.pem
 *.key
 .env
+id_rsa*
+kaggle.json
+.env.*
+!.env.example

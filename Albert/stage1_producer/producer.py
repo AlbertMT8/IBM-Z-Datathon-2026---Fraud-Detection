@@ -653,7 +653,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pp = sub.add_parser("prepare", help="external-merge-sort the raw CSV by unix_time")
-    pp.add_argument("--input", default="data/fraudTrain.csv")
+    pp.add_argument("--input", default="data/fraudTest.csv",
+                    help="replay fraudTest.csv: the scorer warms up on fraudTrain.csv")
     pp.add_argument("--output", default="data/sorted.csv")
     pp.add_argument("--chunk-rows", type=int, default=200_000)
     pp.set_defaults(func=_cmd_prepare)
