@@ -1,0 +1,16 @@
+# Test image: the storer image plus Debian's pytest and fakeredis, and the tests.
+#   docker build -t fraud-storer:latest -f stage5_storage/Dockerfile Albert
+#   docker build -t fraud-storer-test -f stage5_storage/Dockerfile.test Albert
+ARG BASE=fraud-storer:latest
+FROM ${BASE}
+# Debian's python3-fakeredis (2.29) returns nothing for XREADGROUP with ID 0 even
+# when XPENDING shows entries (real Redis returns them), so the pending-recovery
+# tests need fakeredis >= 2.40 from PyPI. Pure Python, test image only.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3-pytest python3-pip \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir --break-system-packages "fakeredis>=2.40,<3"
+COPY ["New stuff/schema.sql", "/app/New stuff/schema.sql"]
+COPY stage5_storage/tests /app/stage5_storage/tests
+WORKDIR /app/stage5_storage
+ENTRYPOINT ["python3", "-m", "pytest", "-p", "no:cacheprovider", "-v", "tests"]
