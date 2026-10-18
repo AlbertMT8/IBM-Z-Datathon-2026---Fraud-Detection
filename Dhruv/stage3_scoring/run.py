@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 
-from scorer import FraudScorer
+from scorer import DuplicateEvent, FraudScorer
 
 
 def dead_letter(raw, code, detail):
@@ -46,6 +46,9 @@ def main():
             continue
         try:
             scored = scorer.score(event)
+        except DuplicateEvent as e:
+            print(f"[stage3] skipped duplicate event_id {e}", file=sys.stderr, flush=True)
+            continue
         except ValueError as e:
             dead_letter(raw, "scoring_error", e)
             continue

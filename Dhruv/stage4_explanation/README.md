@@ -4,13 +4,42 @@ A scored event comes in from stage 3, and the same event goes out with `explanat
 filled: one plain-English sentence an analyst can act on. Follows Albert's
 `scored_event.schema.json`.
 
+In the pipeline: **Redis `tx.scored` → `stream_worker.py` → Redis `tx.explained`** (stage 5 reads `tx.explained`).
+
 ## Files
 | File | What it does |
 | --- | --- |
 | `explainer.py` | `Explainer().explain(scored)`: the logic. Three backends: template, watsonx.ai, local Granite (llama.cpp). |
-| `run.py` | **The container's entrypoint.** Scored events in on stdin, explained events out on stdout, one JSON per line. |
+| `stream_worker.py` | **The container's entrypoint.** Reads Redis `tx.scored`, fills `explanation`, writes `tx.explained`. |
+| `run.py` | Same over stdin/stdout (one JSON per line), for quick local tests without Redis. |
+| `Dockerfile` | The stage 4 container (python:3.12-slim + redis). Build on the LinuxONE VM. |
+| `Dockerfile.llama` | Optional: the local Granite model server (llama.cpp built from source). Not verified yet. |
 
-**No third-party libraries:** only Python's standard library. Nothing has to be compiled for s390x / big-endian, so this container is the easy one on LinuxONE.
+**Only one third-party library, `redis`, which is pure Python.** Nothing has to be compiled for s390x / big-endian, so this container is the easy one on LinuxONE.
+
+## How the worker keeps the pipeline fast
+- ALLOW events (~99.6%) and template sentences are done instantly and passed straight on.
+- Alerts that need the AI (`watsonx` / `local`) go to background threads (`--ai-threads`, default 2), so a 2–5 s
+  AI call never holds up the payments behind it.
+- If more than `--max-ai-waiting` (default 8) alerts are already waiting for the AI, new alerts get the template
+  sentence immediately (`model: "template"`, counted as `ai_busy_used_template`) instead of piling up.
+- Each input is XACKed only after its result is written (at-least-once, like stages 2 and 3).
+- Stage 4 keeps no memory between events, so you can run several copies (each with its own `--consumer`).
+  A restarted worker takes over entries a crashed one never finished.
+- Live numbers go to the Redis hash `metrics:explainer` (explained, ok/skipped/failed/timeout, ai_waiting, alert_p50_ms, alert_p95_ms).
+
+## Docker on LinuxONE (build on the VM itself)
+```bash
+# from the repo root, on the VM, on the same fraud-net network as Redis
+docker build -t fraud-explainer:latest Dhruv/stage4_explanation
+docker run -d --name explainer --network fraud-net fraud-explainer:latest                    # template
+docker run -d --name explainer --network fraud-net -e BACKEND=local \
+    -e LLAMA_URL=http://llm:8080 -e TIMEOUT_MS=10000 fraud-explainer:latest                  # local Granite
+docker run -d --name explainer --network fraud-net -e BACKEND=watsonx \
+    -e WATSONX_APIKEY -e WATSONX_PROJECT_ID fraud-explainer:latest                           # watsonx (keys from your shell)
+```
+For `local`, the model server runs as its own container (`Dockerfile.llama`, pinned to llama.cpp b11669) with a
+big-endian Granite file mounted at `/models`. **Not verified yet:** no Docker or LinuxONE machine was available.
 
 ## Run
 ```bash
@@ -125,9 +154,14 @@ instead (team decision, Oct 17):
   and no running server stops it at startup with a clear message. No card ID, last 4 digits or fraud label was sent in any prompt.
 - **Real Granite 3.3 2B through llama-server on the Mac:** 17/17 alerts got AI sentences, 0 schema errors. The number check works:
   a first, looser prompt produced "130x" for "13.0x", which is what led to the worked-example prompt and the check.
-- **Not tested yet:** the real watsonx call (needs an IBM API key), and anything on LinuxONE.
+- **Pipeline test with Redis (fake Redis server, Mac):** 20,000 events from Albert's real producer → validator → stage 3 →
+  this worker: every event explained exactly once, 0 schema errors, original event text unchanged. With stage 3 and
+  stage 4 both `kill -9`'d mid-stream and restarted: 0 lost, 2 written twice (stage 5 drops repeats by `event_id`).
+  The restarted worker also rode out a dropped Redis connection.
+- **Not tested yet:** the real watsonx call (needs an IBM API key), the AI backends through the Redis worker, and anything on LinuxONE or in Docker.
 
 ## Open-source / services used
 - IBM watsonx.ai text generation API: https://cloud.ibm.com/apidocs/watsonx-ai
 - IBM Granite models: https://www.ibm.com/granite · on Hugging Face: https://huggingface.co/ibm-granite
 - llama.cpp (MIT licence): https://github.com/ggml-org/llama.cpp
+- redis-py: https://github.com/redis/redis-py

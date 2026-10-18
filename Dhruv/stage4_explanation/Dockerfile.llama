@@ -1,0 +1,22 @@
+# Optional: the local Granite model server for `BACKEND=local`. BUILD ON THE LinuxONE VM.
+#   docker build -t fraud-llm:latest -f Dhruv/stage4_explanation/Dockerfile.llama Dhruv/stage4_explanation
+#   docker run -d --name llm --network fraud-net -v "$PWD/local_llm/models:/models" fraud-llm:latest
+#
+# Builds llama.cpp from source (pinned to b11669, the build behind stable v0.7.0).
+# On s390x the model file MUST be big-endian (see README: convert_hf_to_gguf.py --bigendian).
+# NOT YET VERIFIED: no Docker or s390x machine was available when this was written.
+FROM debian:trixie-slim AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch b11669 https://github.com/ggml-org/llama.cpp /src
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
+ && cmake --build /src/build --config Release -j"$(nproc)" --target llama-server
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/bin/ /opt/llama/
+ENV LD_LIBRARY_PATH=/opt/llama
+EXPOSE 8080
+ENTRYPOINT ["/opt/llama/llama-server", "--host", "0.0.0.0", "--port", "8080", "-c", "2048", "-np", "2"]
+CMD ["-m", "/models/granite-3.3-2b-instruct-be.f16.gguf"]

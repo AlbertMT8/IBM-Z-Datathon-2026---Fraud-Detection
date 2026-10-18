@@ -3,4 +3,5 @@ numpy
 scikit-learn
 xgboost
 joblib
+redis>=5.0,<9.0
 jsonschema  # only for demo_stream.py schema checks

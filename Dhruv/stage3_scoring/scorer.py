@@ -48,6 +48,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
+from dedupe import RecentIds
 from features import FEATURE_NAMES, CardMemory, flatten_event, rows_from_csv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,8 +65,13 @@ def _now_rfc3339():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+class DuplicateEvent(Exception):
+    """This event_id was already scored. Not an error: just skip it (and ack it)."""
+
+
 class FraudScorer:
-    def __init__(self, model_dir=os.path.join(HERE, "models")):
+    def __init__(self, model_dir=None):
+        model_dir = model_dir or os.environ.get("MODELS_DIR") or os.path.join(HERE, "models")
         with open(os.path.join(model_dir, "meta.json")) as f:
             meta = json.load(f)
         assert meta["feature_names"] == FEATURE_NAMES, "models were trained with different features"
@@ -79,66 +85,101 @@ class FraudScorer:
         self.xgb.load_model(os.path.join(model_dir, "xgb.json"))
         self.xgb.set_param({"nthread": 1})
         self.memory = CardMemory()
+        self.seen = RecentIds()  # event_ids already scored, so repeats don't count twice
+        self.history_until = None  # latest warm-up time, "YYYY-MM-DDTHH:MM:SS"
 
     def warm_up_from_csv(self, csv_path):
         """Load card history without scoring (a real bank already knows its cards' past)."""
         df = pd.read_csv(csv_path).sort_values("trans_date_trans_time", kind="stable")
         for p in rows_from_csv(df):
             self.memory.compute(p)
+        if len(df):
+            self.history_until = str(df["trans_date_trans_time"].iloc[-1]).replace(" ", "T")[:19]
         return len(df)
 
     def score(self, event):
         return self.score_with_reasons(event)[0]
 
     def score_with_reasons(self, event):
+        """One event -> (scored_event, reasons). Raises ValueError for a broken event,
+        DuplicateEvent for an event_id we've already scored."""
+        result = self.score_batch([event])[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def score_batch(self, events):
+        """Several events (in time order) -> one result per event, same order. Each result is
+        (scored_event, reasons), or a ValueError / DuplicateEvent instance for that event.
+
+        Why batches: the models cost about the same to run on 1 row or 50, so scoring
+        whatever is waiting in one go lets one scorer keep up with a fast stream.
+        Card memory is still updated one event at a time, in order."""
         start = time.perf_counter()
-        try:
-            feats, facts = self.memory.compute(flatten_event(event))
-        except (KeyError, TypeError, ValueError) as e:
-            raise ValueError(f"bad event: {type(e).__name__}: {e}") from e
+        out = [None] * len(events)
+        rows, where, facts_list = [], [], []
+        for i, event in enumerate(events):
+            event_id = event.get("event_id") if isinstance(event, dict) else None
+            if event_id is not None and event_id in self.seen:
+                out[i] = DuplicateEvent(event_id)
+                continue
+            try:
+                feats, facts = self.memory.compute(flatten_event(event))
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                out[i] = ValueError(f"bad event: {type(e).__name__}: {e}")
+                continue
+            if event_id is not None:
+                self.seen.add(event_id)
+            rows.append(feats)
+            where.append(i)
+            facts_list.append(facts)
+        if not rows:
+            return out
 
-        x = np.asarray([feats], dtype=np.float32)
+        x = np.asarray(rows, dtype=np.float32)
         dm = xgb.DMatrix(x, feature_names=FEATURE_NAMES)
-        p = {"logistic_regression": float(self.lr.predict_proba(x)[0, 1]),
-             "random_forest": float(self.rf.predict_proba(x)[0, 1]),
-             "xgboost": float(self.xgb.predict(dm)[0])}
+        p_lr = self.lr.predict_proba(x)[:, 1]
+        p_rf = self.rf.predict_proba(x)[:, 1]
+        p_xgb = self.xgb.predict(dm)
         w = self.weights
-        prob = w["lr"] * p["logistic_regression"] + w["rf"] * p["random_forest"] + w["xgb"] * p["xgboost"]
-        prob = min(max(prob, 0.0), 1.0)
+        prob = np.clip(w["lr"] * p_lr + w["rf"] * p_rf + w["xgb"] * p_xgb, 0.0, 1.0)
+        decisions = np.where(prob >= self.block_threshold, "BLOCK",
+                             np.where(prob >= self.threshold, "REVIEW", "ALLOW"))
+        # Every event in the batch waited for the whole batch, so each reports the batch's time
+        # (honest, slightly pessimistic). Reasons below are outside the clock: "feature build + inference".
+        duration_ms = round((time.perf_counter() - start) * 1000, 3)
 
-        if prob >= self.block_threshold:
-            decision = "BLOCK"
-        elif prob >= self.threshold:
-            decision = "REVIEW"
-        else:
-            decision = "ALLOW"
-        duration_ms = (time.perf_counter() - start) * 1000
+        alerts = [k for k, d in enumerate(decisions) if d != "ALLOW"]
+        contribs = {}
+        if alerts:
+            # How much each feature pushed XGBoost's score up (+) or down (-). Alerts only.
+            c = self.xgb.predict(xgb.DMatrix(x[alerts], feature_names=FEATURE_NAMES), pred_contribs=True)
+            contribs = {k: c[j][:-1] for j, k in enumerate(alerts)}  # last value is the baseline
 
-        reasons = []
-        if decision != "ALLOW":
-            # How much each feature pushed XGBoost's score up (+) or down (-). ~1 ms, so alerts only.
-            # Kept outside scoring_duration_ms: that field is "feature build + inference".
-            contribs = self.xgb.predict(dm, pred_contribs=True)[0][:-1]  # last value is the baseline
-            reasons = self._reasons(contribs, feats, facts)
-
-        scored = {
-            "schema_version": "1.0.0",
-            "event": event,  # passed through untouched
-            "scoring": {
-                "scored_at": _now_rfc3339(),
-                "model_scores": {k: round(v, 6) for k, v in p.items()},
-                "ensemble_score": round(prob, 6),
-                "threshold": self.threshold,
-                "decision": decision,
-                "model_version": self.model_version,
-                "scoring_duration_ms": round(duration_ms, 3),
-                "feature_count": len(FEATURE_NAMES),
-            },
-            "explanation": None,
-        }
-        if reasons:  # optional field; left out for ALLOW
-            scored["scoring"]["reasons"] = reasons
-        return scored, reasons
+        scored_at = _now_rfc3339()
+        for k, i in enumerate(where):
+            reasons = self._reasons(contribs[k], rows[k], facts_list[k]) if k in contribs else []
+            scored = {
+                "schema_version": "1.0.0",
+                "event": events[i],  # passed through untouched
+                "scoring": {
+                    "scored_at": scored_at,
+                    "model_scores": {"logistic_regression": round(float(p_lr[k]), 6),
+                                     "random_forest": round(float(p_rf[k]), 6),
+                                     "xgboost": round(float(p_xgb[k]), 6)},
+                    "ensemble_score": round(float(prob[k]), 6),
+                    "threshold": self.threshold,
+                    "decision": str(decisions[k]),
+                    "model_version": self.model_version,
+                    "scoring_duration_ms": duration_ms,
+                    "feature_count": len(FEATURE_NAMES),
+                },
+                "explanation": None,
+            }
+            if reasons:  # optional field; left out for ALLOW
+                scored["scoring"]["reasons"] = reasons
+            out[i] = (scored, reasons)
+        return out
 
     def _reasons(self, contribs, feats, facts, top=3):
         impact = {}
