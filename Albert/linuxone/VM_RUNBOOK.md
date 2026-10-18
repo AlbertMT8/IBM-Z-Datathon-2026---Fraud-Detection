@@ -1,7 +1,7 @@
 # Stage 5 on LinuxONE: copy-paste runbook
 
-Stage 5 (Postgres + storer + dlq-storer + dashboard) has not been run on the VM yet: the session that built it had no
-VM credentials. These are the exact steps. Host and key come **only from your shell environment**; never paste them
+Stage 5 (Postgres + storer + dlq-storer + dashboard) was deployed and measured on the VM with these steps on
+Oct 18, 2026; results in [`RESULTS_STAGE5.md`](RESULTS_STAGE5.md). Re-run them after any `git pull`. Host and key come **only from your shell environment**; never paste them
 into a file in this repo (it is public).
 
 ## 0. On your laptop

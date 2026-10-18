@@ -98,24 +98,30 @@ the Mac-trained models in `Dhruv/stage3_scoring/models/`. Tests: `pytest Albert/
 ## Results
 
 Measured on a LinuxONE Community Cloud VM (3 cores, 8 GB; `uname -m` = `s390x`), replaying `fraudTest.csv` with 1%
-deliberately broken events. Details: [`Dhruv/LINUXONE_RESULTS.md`](Dhruv/LINUXONE_RESULTS.md).
+deliberately broken events. Details: [`Dhruv/LINUXONE_RESULTS.md`](Dhruv/LINUXONE_RESULTS.md) (to stage 4) and
+[`Albert/linuxone/RESULTS_STAGE5.md`](Albert/linuxone/RESULTS_STAGE5.md) (stage 5 included, raw output).
 
 | Measured to | Target rate | Events | Lost / written twice | Sustained | p50 | p95 | p99 | Broken → DLQ |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | stage 4 output | 1,000/s | 60,000 | 0 / 0 | 1,024/s | 48 ms | 68 ms | 456 ms | 595 / 595 |
 | stage 4 output | 3,000/s | 90,000 | 0 / 0 | 3,175/s | 81 ms | 1,378 ms | 1,557 ms | 882 / 882 |
 | stage 4 output | 5,000/s (2 validators) | 150,000 | 0 / 0 | 4,944/s | 1,746 ms | 2,220 ms | 2,496 ms | 1,487 / 1,487 |
-| **Postgres commit (stage 5 included)** | 1,000/s and 5,000/s | — | — | — | — | — | — | **pending VM run** |
+| **Postgres commit (stage 5 included)** | **1,000/s** | 60,000 | 0 / 0 | **1,023/s** | **36 ms** | **105 ms** | 476 ms | 624 / 624 |
+| **Postgres commit (stage 5 included)** | 5,000/s (2 validators) | 150,000 | 0 / 0 | 4,141/s | 6,278 ms | 8,846 ms | 9,058 ms | 1,441 / 1,441 |
 
-"p50/p95/p99" = latency from the producer's `emitted_at` to the stage named in the first column. About
-3,000–5,000 events/s is where this 3-core VM saturates: above that, events queue but none are lost.
+"p50/p95/p99" = latency from the producer's `emitted_at` to the stage named in the first column (for Postgres, the
+row's commit: `latency_ms`, computed by the database). The stage-4 rows are Dhruv's earlier runs without stage 5;
+the Postgres rows ran all nine containers (with Postgres, two storers and the dashboard) on the same 3 cores.
+**At 1,000/s the whole pipeline, including the Postgres commit, answers within 105 ms for 95% of payments**, and
+stage 5 adds about 9 ms at p50. At 5,000/s the full nine-container pipeline is past this VM's capacity (events queue
+in validation and scoring) but still loses and duplicates nothing.
 
 **Model quality** (models trained on the VM, graded once on fraudTest: 555,719 payments, 2,145 fraud): ensemble
 PR-AUC **0.960**, precision **0.950**, recall **0.902** at the alert cut-off. Live on the stream at 1,000/s: 90% of
 fraud caught, 93% of alerts real.
 
-Stage 5 was verified locally (Docker Desktop, arm64, synthetic Sparkov-format data, Mac-trained models) for
-correctness, not speed: 19,799 of 19,799 valid events stored, 0 lost, 0 duplicate rows; DLQ 206 injected = 206 in
+Before the VM run, stage 5 was also verified locally (Docker Desktop, arm64, synthetic Sparkov-format data,
+Mac-trained models) for correctness, not speed: 19,794 of 19,794 valid events stored, 0 lost, 0 duplicate rows; DLQ 206 injected = 206 in
 `tx.dlq` = 206 stored; every alert row has its explanation and reasons. Also no loss after a SIGKILL of the storer,
 and an unchanged row count when the same events were replayed again.
 
@@ -132,7 +138,8 @@ and an unchanged row count when the same events were replayed again.
   would be on real cards.
 - `dead_letter_events` has no unique key (the schema is a frozen contract). The DLQ storer dedupes by stream entry
   in memory, and after a crash by row content (see the stage 5 README).
-- The stage-5-inclusive LinuxONE numbers are not measured yet (row above).
+- **Capacity:** with all nine containers on 3 cores the VM keeps up at about 1,000 events/s with sub-second tails;
+  5,000/s queues for seconds (nothing lost). More cores, or moving Postgres off the VM, would raise that.
 
 ## Open source and data
 
